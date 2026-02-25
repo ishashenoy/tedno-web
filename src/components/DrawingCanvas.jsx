@@ -109,7 +109,7 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
     return () => observer.disconnect()
   }, [editorWrapperRef])
 
-    const commitStrokes = (updater, historyEntry) => {
+  const commitStrokes = (updater, historyEntry) => {
     setInternalStrokes((prev) => {
       const next = typeof updater === 'function' ? updater(prev) : updater
       strokesRef.current = next
@@ -117,8 +117,11 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
       return next
     })
     if (historyEntry) {
-      setHistory((prev) => [...prev, historyEntry])
-      setRedoHistory([])
+      setHistory((prev) => {
+        const newHistory = [...prev, historyEntry]
+        return newHistory
+      })
+      setRedoHistory([]) // Clear redo history when new action is performed
     }
   }
 

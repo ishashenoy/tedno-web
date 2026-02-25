@@ -19,6 +19,15 @@ function App() {
   const [documentTitle, setDocumentTitle] = useState('')
   const [documentContent, setDocumentContent] = useState('')
 
+  // Document editor zoom state
+  const [editorZoom, setEditorZoom] = useState(1)
+  const [editorPanOffset, setEditorPanOffset] = useState({ x: 0, y: 0 })
+  const [isEditorZooming, setIsEditorZooming] = useState(false)
+  const [isEditorPanning, setIsEditorPanning] = useState(false)
+  const editorTouchStartDistance = useRef(0)
+  const editorTouchStartZoom = useRef(1)
+  const editorTouchStartPan = useRef({ x: 0, y: 0 })
+
   /** @type {[Array<{id: string, x: number, y: number, width: number, height: number, color: string, text: string, zIndex: number}>, Function]} */
   const [stickyNotes, setStickyNotes] = useState([])
   /** @type {[Array<{id: string, stroke_data: { d: string, color?: string, width?: number }}>, Function]} */
@@ -616,6 +625,112 @@ function App() {
     setStrokes(next)
   }, [])
 
+  // Editor zoom handlers
+  const getTouchDistance = (touches) => {
+    if (touches.length < 2) return 0
+    const dx = touches[1].clientX - touches[0].clientX
+    const dy = touches[1].clientY - touches[0].clientY
+    return Math.sqrt(dx * dx + dy * dy)
+  }
+
+  const getTouchCenter = (touches, containerRect) => {
+    if (touches.length === 0) return { x: 0, y: 0 }
+    if (touches.length === 1) {
+      return {
+        x: touches[0].clientX - containerRect.left,
+        y: touches[0].clientY - containerRect.top
+      }
+    }
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2 - containerRect.left,
+      y: (touches[0].clientY + touches[1].clientY) / 2 - containerRect.top
+    }
+  }
+
+  const handleEditorTouchStart = useCallback((e) => {
+    const container = e.currentTarget
+    const rect = container.getBoundingClientRect()
+    
+    if (e.touches.length === 2) {
+      // Two fingers - start pinch zoom
+      e.preventDefault()
+      setIsEditorZooming(true)
+      setIsEditorPanning(false)
+      editorTouchStartDistance.current = getTouchDistance(e.touches)
+      editorTouchStartZoom.current = editorZoom
+      return
+    }
+    
+    if (e.touches.length === 1 && editorZoom > 1) {
+      // Single finger with zoom - start panning
+      e.preventDefault()
+      setIsEditorPanning(true)
+      setIsEditorZooming(false)
+      editorTouchStartPan.current = {
+        x: e.touches[0].clientX - rect.left - editorPanOffset.x,
+        y: e.touches[0].clientY - rect.top - editorPanOffset.y
+      }
+    }
+  }, [editorZoom, editorPanOffset])
+
+  const handleEditorTouchMove = useCallback((e) => {
+    if (e.touches.length === 2 && isEditorZooming) {
+      // Pinch zoom
+      e.preventDefault()
+      const distance = getTouchDistance(e.touches)
+      const scaleFactor = distance / editorTouchStartDistance.current
+      const newZoom = Math.max(0.5, Math.min(3, editorTouchStartZoom.current * scaleFactor))
+      
+      const container = e.currentTarget
+      const rect = container.getBoundingClientRect()
+      const center = getTouchCenter(e.touches, rect)
+      
+      // Calculate pan offset to zoom around the touch center
+      const zoomDelta = newZoom - editorZoom
+      const newPanX = editorPanOffset.x - (center.x - editorPanOffset.x) * (zoomDelta / editorZoom)
+      const newPanY = editorPanOffset.y - (center.y - editorPanOffset.y) * (zoomDelta / editorZoom)
+      
+      setEditorZoom(newZoom)
+      setEditorPanOffset({ x: newPanX, y: newPanY })
+      return
+    }
+    
+    if (e.touches.length === 1 && isEditorPanning) {
+      // Pan
+      e.preventDefault()
+      const container = e.currentTarget
+      const rect = container.getBoundingClientRect()
+      const newPanX = e.touches[0].clientX - rect.left - editorTouchStartPan.current.x
+      const newPanY = e.touches[0].clientY - rect.top - editorTouchStartPan.current.y
+      setEditorPanOffset({ x: newPanX, y: newPanY })
+    }
+  }, [isEditorZooming, isEditorPanning, editorZoom, editorPanOffset])
+
+  const handleEditorTouchEnd = useCallback((e) => {
+    if (e.touches.length === 0) {
+      // All fingers lifted
+      setIsEditorZooming(false)
+      setIsEditorPanning(false)
+    } else if (e.touches.length === 1 && isEditorZooming) {
+      // Went from two fingers to one - stop zooming, maybe start panning
+      setIsEditorZooming(false)
+      if (editorZoom > 1) {
+        setIsEditorPanning(true)
+        const container = e.currentTarget
+        const rect = container.getBoundingClientRect()
+        editorTouchStartPan.current = {
+          x: e.touches[0].clientX - rect.left - editorPanOffset.x,
+          y: e.touches[0].clientY - rect.top - editorPanOffset.y
+        }
+      }
+    }
+  }, [isEditorZooming, editorZoom, editorPanOffset])
+
+  const handleResetEditorZoom = useCallback(() => {
+    setEditorZoom(1)
+    setEditorPanOffset({ x: 0, y: 0 })
+  }, [])
+
   const documentsForManager = useMemo(() => documents, [documents])
 
   // --- Render ---
@@ -672,6 +787,11 @@ function App() {
           <button className="btn btn-primary" onClick={handleCreateNote} disabled={!selectedDocumentId}>
             + New Note
           </button>
+          {editorZoom !== 1 && (
+            <button className="btn btn-secondary" onClick={handleResetEditorZoom} title="Reset Zoom">
+              Reset Zoom ({Math.round(editorZoom * 100)}%)
+            </button>
+          )}
           <div className="user-menu">
             <span className="user-email">{session?.user?.email || 'Guest'}</span>
             <button className="btn btn-secondary" onClick={handleSignOut} disabled={authLoading}>
@@ -681,7 +801,15 @@ function App() {
         </div>
       </header>
 
-      <div className="editor-container">
+      <div className="editor-container"
+           onTouchStart={handleEditorTouchStart}
+           onTouchMove={handleEditorTouchMove}
+           onTouchEnd={handleEditorTouchEnd}
+           style={{
+             transform: `scale(${editorZoom}) translate(${editorPanOffset.x / editorZoom}px, ${editorPanOffset.y / editorZoom}px)`,
+             transformOrigin: '0 0',
+             transition: isEditorZooming || isEditorPanning ? 'none' : 'transform 0.15s ease-out'
+           }}>
         {error && (
           <div style={{ 
             padding: '2rem', 

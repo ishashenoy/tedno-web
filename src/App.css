@@ -88,6 +88,8 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  touch-action: none; /* Enable custom touch handling */
+  user-select: none; /* Prevent text selection during touch */
 }
 
 .editor-wrapper {
