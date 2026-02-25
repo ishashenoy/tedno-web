@@ -912,7 +912,18 @@ function App() {
         </div>
       </header>
 
-      <div className="editor-container">
+      <div
+        className="editor-container"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        style={{
+          transform: `translate(${editorPanOffset.x}px, ${editorPanOffset.y}px) scale(${editorZoom})`,
+          transformOrigin: '0 0',
+          transition: isZooming || isPanning ? 'none' : 'transform 0.15s ease-out',
+          touchAction: 'none'
+        }}
+      >
         {error && (
           <div style={{ 
             padding: '2rem', 
