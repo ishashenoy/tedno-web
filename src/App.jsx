@@ -123,41 +123,40 @@ function App() {
   -------------------------*/
 
   const handleTouchMove = useCallback((e) => {
+    const rect = e.currentTarget.getBoundingClientRect()
 
-    /* ===== PINCH ZOOM ===== */
-    if (e.touches.length === 2 && isZooming) {
+    /* ========================
+      TWO FINGER GESTURE
+    =========================*/
+    if (e.touches.length === 2) {
       e.preventDefault()
-
-      const rect = e.currentTarget.getBoundingClientRect()
-      const distance = getTouchDistance(e.touches)
-      const scaleFactor = distance / pinchStartDistance.current
-
-      const newZoom = Math.max(
-        0.5,
-        Math.min(3, pinchStartZoom.current * scaleFactor)
-      )
 
       const center = getTouchCenter(e.touches, rect)
-      const zoomRatio = newZoom / pinchStartZoom.current
 
-      const newPanX =
-        center.x - (center.x - pinchStartPan.current.x) * zoomRatio
+      setIsZooming(true)
+      setIsPanning(false)
 
-      const newPanY =
-        center.y - (center.y - pinchStartPan.current.y) * zoomRatio
+      pinchStartDistance.current = getTouchDistance(e.touches)
+      pinchStartZoom.current = editorZoom
 
-      setEditorZoom(newZoom)
-      setEditorPanOffset({
-        x: applyResistance(newPanX),
-        y: applyResistance(newPanY)
-      })
+      pinchStartPan.current = {
+        x: editorPanOffset.x,
+        y: editorPanOffset.y,
+        centerX: center.x,
+        centerY: center.y
+      }
+
+      if (momentumFrame.current) {
+        cancelAnimationFrame(momentumFrame.current)
+        momentumFrame.current = null
+      }
     }
 
-    /* ===== PAN ===== */
+    /* ========================
+      ONE FINGER PAN
+    =========================*/
     if (e.touches.length === 1 && isPanning) {
       e.preventDefault()
-
-      const rect = e.currentTarget.getBoundingClientRect()
 
       const x = e.touches[0].clientX - rect.left
       const y = e.touches[0].clientY - rect.top
@@ -173,11 +172,15 @@ function App() {
         y: (newPanY - editorPanOffset.y) / dt,
       }
 
-      lastPanPoint.current = { x: newPanX, y: newPanY, time: now }
+      lastPanPoint.current = {
+        x: newPanX,
+        y: newPanY,
+        time: now
+      }
 
       setEditorPanOffset({
         x: applyResistance(newPanX),
-        y: applyResistance(newPanY),
+        y: applyResistance(newPanY)
       })
     }
 
