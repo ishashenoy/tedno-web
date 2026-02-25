@@ -8,12 +8,15 @@
   bottom: 0;
   pointer-events: none;
   z-index: 5;
+  overflow: hidden; /* Prevent content overflow during zoom */
 }
 
 .drawing-svg {
   position: absolute;
   top: 0;
   left: 0;
+  transition: transform 0.15s ease-out;
+  will-change: transform;
 }
 
 .drawing-strokes path,
@@ -206,4 +209,17 @@
   background: #37352f;
   cursor: pointer;
   border: none;
+}
+
+/* ── Touch and Zoom Enhancements ── */
+.drawing-svg {
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  touch-action: none;
+}
+
+.drawing-layer:active {
+  pointer-events: auto;
 }

@@ -75,6 +75,16 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const lastClearTapRef = useRef(0)
 
+  // Zoom state for tablet pinch gestures
+  const [zoom, setZoom] = useState(1)
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+  const [isZooming, setIsZooming] = useState(false)
+  const [isPanning, setIsPanning] = useState(false)
+  const touchStartDistance = useRef(0)
+  const touchStartZoom = useRef(1)
+  const touchStartPan = useRef({ x: 0, y: 0 })
+  const lastTouchCenter = useRef({ x: 0, y: 0 })
+
   useEffect(() => {
     const safeStrokes = strokes || []
     setInternalStrokes(safeStrokes)
@@ -170,43 +180,43 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
     erasedIdsRef.current = new Set()
   }
 
-     const handleUndo = () => {
-    setHistory((prevHistory) => {
-      if (!prevHistory.length) return prevHistory
-      const last = prevHistory[prevHistory.length - 1]
-      if (last.type === 'add') {
-        commitStrokes((prev) => {
-          const removed = prev.find((s) => s.id === last.strokeId)
-          if (removed) setRedoHistory((r) => [...r, { type: 'add', stroke: removed }])
-          return prev.filter((s) => s.id !== last.strokeId)
-        }, null)
-      } else if (last.type === 'erase') {
-        commitStrokes((prev) => {
-          setRedoHistory((r) => [...r, { type: 'erase', removedIds: last.removed.map((s) => s.id) }])
-          return [...prev, ...last.removed]
-        }, null)
-      } else if (last.type === 'clear') {
-        commitStrokes(last.previousStrokes, null)
-        setRedoHistory((r) => [...r, { type: 'clear' }])
+  const handleUndo = () => {
+    if (!history.length) return
+    
+    const last = history[history.length - 1]
+    
+    if (last.type === 'add') {
+      const removed = internalStrokes.find((s) => s.id === last.strokeId)
+      if (removed) {
+        setRedoHistory((r) => [...r, { type: 'add', stroke: removed }])
+        commitStrokes((prev) => prev.filter((s) => s.id !== last.strokeId), null)
       }
-      return prevHistory.slice(0, -1)
-    })
+    } else if (last.type === 'erase') {
+      setRedoHistory((r) => [...r, { type: 'erase', removedIds: last.removed.map((s) => s.id) }])
+      commitStrokes((prev) => [...prev, ...last.removed], null)
+    } else if (last.type === 'clear') {
+      setRedoHistory((r) => [...r, { type: 'clear' }])
+      commitStrokes(last.previousStrokes, null)
+    }
+    
+    setHistory((prev) => prev.slice(0, -1))
   }
 
   const handleRedo = () => {
-    setRedoHistory((prevRedo) => {
-      if (!prevRedo.length) return prevRedo
-      const last = prevRedo[prevRedo.length - 1]
-      if (last.type === 'add' && last.stroke) {
-        commitStrokes((prev) => [...prev, last.stroke], { type: 'add', strokeId: last.stroke.id })
-      } else if (last.type === 'erase' && last.removedIds?.length) {
-        const removed = strokesRef.current.filter((s) => last.removedIds.includes(s.id))
-        commitStrokes((prev) => prev.filter((s) => !last.removedIds.includes(s.id)), { type: 'erase', removed })
-      } else if (last.type === 'clear') {
-        commitStrokes([], { type: 'clear', previousStrokes: strokesRef.current })
-      }
-      return prevRedo.slice(0, -1)
-    })
+    if (!redoHistory.length) return
+    
+    const last = redoHistory[redoHistory.length - 1]
+    
+    if (last.type === 'add' && last.stroke) {
+      commitStrokes((prev) => [...prev, last.stroke], { type: 'add', strokeId: last.stroke.id })
+    } else if (last.type === 'erase' && last.removedIds?.length) {
+      const removed = internalStrokes.filter((s) => last.removedIds.includes(s.id))
+      commitStrokes((prev) => prev.filter((s) => !last.removedIds.includes(s.id)), { type: 'erase', removed })
+    } else if (last.type === 'clear') {
+      commitStrokes([], { type: 'clear', previousStrokes: internalStrokes })
+    }
+    
+    setRedoHistory((prev) => prev.slice(0, -1))
   }
 
   useEffect(() => {
@@ -228,40 +238,217 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
 
     const getPoint = (e) => {
       const rect = host.getBoundingClientRect()
-      return [e.clientX - rect.left + host.scrollLeft, e.clientY - rect.top + host.scrollTop]
+      const x = (e.clientX - rect.left + host.scrollLeft - panOffset.x) / zoom
+      const y = (e.clientY - rect.top + host.scrollTop - panOffset.y) / zoom
+      return [x, y]
+    }
+
+    const getTouchDistance = (touches) => {
+      if (touches.length < 2) return 0
+      const dx = touches[1].clientX - touches[0].clientX
+      const dy = touches[1].clientY - touches[0].clientY
+      return Math.sqrt(dx * dx + dy * dy)
+    }
+
+    const getTouchCenter = (touches) => {
+      if (touches.length === 0) return { x: 0, y: 0 }
+      if (touches.length === 1) {
+        const rect = host.getBoundingClientRect()
+        return {
+          x: touches[0].clientX - rect.left,
+          y: touches[0].clientY - rect.top
+        }
+      }
+      const rect = host.getBoundingClientRect()
+      return {
+        x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
+        y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top
+      }
     }
 
     const onDown = (e) => {
       if (!isDrawingMode) return
-      if (e.pointerType === 'touch') { e.preventDefault(); return }
-      if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return
+      
+      // Check if this is a stylus or pen input
+      const isStylus = e.pointerType === 'pen' || 
+                      (e.pointerType === 'touch' && (e.pressure > 0 || e.width < 10 || e.height < 10))
+      
+      // Handle stylus/pen input with pointer events
+      if (isStylus || e.pointerType === 'mouse') {
+        e.preventDefault()
+        if (activeTool === 'pen') {
+          isDrawingRef.current = true
+          const [x, y] = getPoint(e)
+          pointsRef.current = [[x, y, Math.sqrt(e.pressure || 0.5)]]
+          svg.setPointerCapture(e.pointerId)
+          updateLiveStroke()
+        } else if (activeTool === 'eraser') {
+          isErasingRef.current = true
+          erasedIdsRef.current = new Set()
+          svg.setPointerCapture(e.pointerId)
+          handleEraseAtPoint(getPoint(e))
+        }
+        return
+      }
+      
+      // Let touch events handle finger input for gestures
+    }
+
+    const onTouchStart = (e) => {
+      if (!isDrawingMode) return
+      
+      // Skip if this touch event might be from a stylus (stylus should use pointer events)
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        // Check if this might be a stylus by examining touch properties
+        if (touch.force !== undefined && touch.force > 0) {
+          // This might be a stylus with pressure, let pointer events handle it
+          return
+        }
+      }
+      
       e.preventDefault()
-      if (activeTool === 'pen') {
+      
+      if (e.touches.length === 2) {
+        // Two fingers - start pinch zoom
+        setIsZooming(true)
+        setIsPanning(false)
+        touchStartDistance.current = getTouchDistance(e.touches)
+        touchStartZoom.current = zoom
+        lastTouchCenter.current = getTouchCenter(e.touches)
+        return
+      }
+      
+      if (e.touches.length === 1 && zoom > 1) {
+        // Single finger with zoom - start panning
+        setIsPanning(true)
+        setIsZooming(false)
+        const rect = host.getBoundingClientRect()
+        touchStartPan.current = {
+          x: e.touches[0].clientX - rect.left - panOffset.x,
+          y: e.touches[0].clientY - rect.top - panOffset.y
+        }
+        return
+      }
+      
+      // Single finger drawing (fallback for devices without pointer events)
+      if (activeTool === 'pen' && e.touches.length === 1) {
         isDrawingRef.current = true
-        const [x, y] = getPoint(e)
-        pointsRef.current = [[x, y, Math.sqrt(e.pressure || 0.5)]]
-        svg.setPointerCapture(e.pointerId)
+        const touch = e.touches[0]
+        const [x, y] = getPoint({ clientX: touch.clientX, clientY: touch.clientY })
+        pointsRef.current = [[x, y, 0.5]]
         updateLiveStroke()
-      } else if (activeTool === 'eraser') {
+      } else if (activeTool === 'eraser' && e.touches.length === 1) {
         isErasingRef.current = true
         erasedIdsRef.current = new Set()
-        svg.setPointerCapture(e.pointerId)
-        handleEraseAtPoint(getPoint(e))
+        const touch = e.touches[0]
+        handleEraseAtPoint(getPoint({ clientX: touch.clientX, clientY: touch.clientY }))
+      }
+    }
+
+    const onTouchMove = (e) => {
+      if (!isDrawingMode) return
+      
+      // Skip if this might be a stylus touch (let pointer events handle it)
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        if (touch.force !== undefined && touch.force > 0) {
+          return
+        }
+      }
+      
+      e.preventDefault()
+      
+      if (e.touches.length === 2 && isZooming) {
+        // Pinch zoom
+        const distance = getTouchDistance(e.touches)
+        const center = getTouchCenter(e.touches)
+        const scaleFactor = distance / touchStartDistance.current
+        const newZoom = Math.max(0.5, Math.min(5, touchStartZoom.current * scaleFactor))
+        
+        // Calculate pan offset to zoom around the touch center
+        const zoomDelta = newZoom - zoom
+        const newPanX = panOffset.x - (center.x - panOffset.x) * (zoomDelta / zoom)
+        const newPanY = panOffset.y - (center.y - panOffset.y) * (zoomDelta / zoom)
+        
+        setZoom(newZoom)
+        setPanOffset({ x: newPanX, y: newPanY })
+        return
+      }
+      
+      if (e.touches.length === 1 && isPanning) {
+        // Pan
+        const rect = host.getBoundingClientRect()
+        const newPanX = e.touches[0].clientX - rect.left - touchStartPan.current.x
+        const newPanY = e.touches[0].clientY - rect.top - touchStartPan.current.y
+        setPanOffset({ x: newPanX, y: newPanY })
+        return
+      }
+      
+      // Drawing (fallback for devices without pointer events)
+      if (e.touches.length === 1) {
+        const touch = e.touches[0]
+        if (isDrawingRef.current && activeTool === 'pen') {
+          const [x, y] = getPoint({ clientX: touch.clientX, clientY: touch.clientY })
+          pointsRef.current.push([x, y, 0.5])
+          updateLiveStroke()
+        } else if (isErasingRef.current && activeTool === 'eraser') {
+          handleEraseAtPoint(getPoint({ clientX: touch.clientX, clientY: touch.clientY }))
+        }
+      }
+    }
+
+    const onTouchEnd = (e) => {
+      if (!isDrawingMode) return
+      e.preventDefault()
+      
+      if (e.touches.length === 0) {
+        // All fingers lifted
+        setIsZooming(false)
+        setIsPanning(false)
+        
+        if (isDrawingRef.current && activeTool === 'pen') {
+          isDrawingRef.current = false
+          commitStroke()
+        } else if (isErasingRef.current && activeTool === 'eraser') {
+          isErasingRef.current = false
+          commitEraseGesture()
+        }
+      } else if (e.touches.length === 1 && isZooming) {
+        // Went from two fingers to one - stop zooming, maybe start panning
+        setIsZooming(false)
+        if (zoom > 1) {
+          setIsPanning(true)
+          const rect = host.getBoundingClientRect()
+          touchStartPan.current = {
+            x: e.touches[0].clientX - rect.left - panOffset.x,
+            y: e.touches[0].clientY - rect.top - panOffset.y
+          }
+        }
       }
     }
 
     const onMove = (e) => {
       if (!isDrawingMode) return
-      if (e.pointerType === 'touch') { e.preventDefault(); return }
-      if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return
-      e.preventDefault()
-      if (isDrawingRef.current && activeTool === 'pen') {
-        const [x, y] = getPoint(e)
-        pointsRef.current.push([x, y, Math.sqrt(e.pressure || 0.5)])
-        updateLiveStroke()
-      } else if (isErasingRef.current && activeTool === 'eraser') {
-        handleEraseAtPoint(getPoint(e))
+      
+      // Check if this is a stylus or pen input
+      const isStylus = e.pointerType === 'pen' || 
+                      (e.pointerType === 'touch' && (e.pressure > 0 || e.width < 10 || e.height < 10))
+      
+      // Handle stylus/pen input with pointer events
+      if (isStylus || e.pointerType === 'mouse') {
+        e.preventDefault()
+        if (isDrawingRef.current && activeTool === 'pen') {
+          const [x, y] = getPoint(e)
+          pointsRef.current.push([x, y, Math.sqrt(e.pressure || 0.5)])
+          updateLiveStroke()
+        } else if (isErasingRef.current && activeTool === 'eraser') {
+          handleEraseAtPoint(getPoint(e))
+        }
+        return
       }
+      
+      // Let touch events handle finger input
     }
 
     const onUp = (e) => {
@@ -281,13 +468,24 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
     svg.addEventListener('pointermove', onMove, { passive: false })
     svg.addEventListener('pointerup', onUp)
     svg.addEventListener('pointercancel', onUp)
+    
+    // Touch events for tablets
+    svg.addEventListener('touchstart', onTouchStart, { passive: false })
+    svg.addEventListener('touchmove', onTouchMove, { passive: false })
+    svg.addEventListener('touchend', onTouchEnd, { passive: false })
+    svg.addEventListener('touchcancel', onTouchEnd, { passive: false })
+    
     return () => {
       svg.removeEventListener('pointerdown', onDown)
       svg.removeEventListener('pointermove', onMove)
       svg.removeEventListener('pointerup', onUp)
       svg.removeEventListener('pointercancel', onUp)
+      svg.removeEventListener('touchstart', onTouchStart)
+      svg.removeEventListener('touchmove', onTouchMove)
+      svg.removeEventListener('touchend', onTouchEnd)
+      svg.removeEventListener('touchcancel', onTouchEnd)
     }
-  }, [isDrawingMode, activeTool, penWidth, penColor, editorWrapperRef])
+  }, [isDrawingMode, activeTool, penWidth, penColor, editorWrapperRef, zoom, panOffset])
 
   const handleToggleDrawing = () => {
     setIsDrawingMode((prev) => !prev)
@@ -306,6 +504,11 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
     } else {
       lastClearTapRef.current = now
     }
+  }
+
+  const handleResetZoom = () => {
+    setZoom(1)
+    setPanOffset({ x: 0, y: 0 })
   }
 
   const handleExport = async () => {
@@ -341,7 +544,11 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
         className="drawing-svg"
         width={canvasSize.width}
         height={canvasSize.height}
-        style={{ pointerEvents: isDrawingMode ? 'auto' : 'none' }}
+        style={{ 
+          pointerEvents: isDrawingMode ? 'auto' : 'none',
+          transform: `scale(${zoom}) translate(${panOffset.x / zoom}px, ${panOffset.y / zoom}px)`,
+          transformOrigin: '0 0'
+        }}
       >
         <g className="drawing-strokes">
           {internalStrokes.map((stroke) => (
@@ -431,6 +638,11 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
 
           {/* Clear */}
           <button type="button" className="drawing-toolbar-btn" onClick={handleClearAll} title="Clear (double-tap to confirm)">⌫</button>
+
+          {/* Reset Zoom */}
+          {zoom !== 1 && (
+            <button type="button" className="drawing-toolbar-btn" onClick={handleResetZoom} title="Reset Zoom">⊙</button>
+          )}
 
           {/* Export */}
           <button type="button" className="drawing-toolbar-btn" onClick={handleExport} title="Export PNG">↓</button>
