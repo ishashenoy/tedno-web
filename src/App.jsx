@@ -1,11 +1,13 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from './supabaseClient'
-import RichTextEditor from './components/RichTextEditor'
+import RichTextEditor, { RichTextToolbar } from './components/RichTextEditor'
 import StickyNote from './components/StickyNote'
 import DocumentManager from './components/DocumentManager'
-import DrawingCanvas from './components/DrawingCanvas'
+import DrawingCanvas, { DrawingToolbar } from './components/DrawingCanvas'
 import SignUp from './components/SignUp'
 import SignIn from './components/SignIn'
+import { useEditor } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
 import './App.css'
 
 function App() {
@@ -30,6 +32,30 @@ function App() {
   const [error, setError] = useState(null)
 
   const editorWrapperRef = useRef(null)
+
+  // Drawing mode state
+  const [isDrawingMode, setIsDrawingMode] = useState(false)
+
+  // Create editor instance for the fixed toolbar
+  const editor = useEditor({
+    extensions: [StarterKit],
+    content: documentContent,
+    onUpdate: ({ editor }) => {
+      setDocumentContent(editor.getHTML())
+    },
+    editorProps: {
+      attributes: {
+        class: 'rich-text-editor-content',
+      },
+    },
+  })
+
+  // Update editor content when documentContent changes
+  useEffect(() => {
+    if (editor && editor.getHTML() !== documentContent) {
+      editor.commands.setContent(documentContent, false)
+    }
+  }, [editor, documentContent])
   const contentSaveTimeoutRef = useRef(null)
   const notesSaveTimeoutRef = useRef(null)
   const strokesSaveTimeoutRef = useRef(null)
@@ -37,45 +63,53 @@ function App() {
   const lastStrokesDocIdRef = useRef(null)
 
   /* ================================
-    PREMIUM ZOOM + PAN SYSTEM
+     ZOOM + PAN SYSTEM
   ================================= */
 
-  const [editorZoom, setEditorZoom] = useState(1)
-  const [editorPanOffset, setEditorPanOffset] = useState({ x: 0, y: 0 })
-  const [isZooming, setIsZooming] = useState(false)
-  const [isPanning, setIsPanning] = useState(false)
+  const transformRef = useRef(null)
 
-  const pinchStartDistance = useRef(0)
-  const pinchStartZoom = useRef(1)
-  const pinchStartPan = useRef({
-    x: 0,
-    y: 0,
-    centerX: 0,
-    centerY: 0,
+  const zoomRef = useRef(1)
+  const panRef = useRef({ x: 0, y: 0 })
+
+  const gestureRef = useRef({
+    mode: null, // 'pan' | 'pinch'
+    startZoom: 1,
+    startPan: { x: 0, y: 0 },
+    startDistance: 0,
+    startCenter: { x: 0, y: 0 }
   })
 
-  const panVelocity = useRef({ x: 0, y: 0 })
-  const lastPanPoint = useRef({ x: 0, y: 0, time: 0 })
-  const momentumFrame = useRef(null)
+  const rafRef = useRef(null)
 
   /* ---------- Helpers ---------- */
 
-  const getTouchDistance = (touches) => {
-    const dx = touches[1].clientX - touches[0].clientX
-    const dy = touches[1].clientY - touches[0].clientY
-    return Math.sqrt(dx * dx + dy * dy)
+  function getDistance(touches) {
+    const dx = touches[0].clientX - touches[1].clientX
+    const dy = touches[0].clientY - touches[1].clientY
+    return Math.hypot(dx, dy)
   }
 
-  const getTouchCenter = (touches, rect) => ({
-    x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
-    y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top,
-  })
+  function getCenter(touches, rect) {
+    return {
+      x: (touches[0].clientX + touches[1].clientX) / 2 - rect.left,
+      y: (touches[0].clientY + touches[1].clientY) / 2 - rect.top
+    }
+  }
 
-  const applyResistance = (value, limit = 250) => {
-    if (Math.abs(value) <= limit) return value
-    const excess = Math.abs(value) - limit
-    const resisted = limit + excess * 0.3
-    return value < 0 ? -resisted : resisted
+  function applyTransform() {
+    if (!transformRef.current) return
+
+    transformRef.current.style.transform =
+      `translate3d(${panRef.current.x}px, ${panRef.current.y}px, 0) scale(${zoomRef.current})`
+  }
+
+  function requestFrame() {
+    if (rafRef.current) return
+
+    rafRef.current = requestAnimationFrame(() => {
+      applyTransform()
+      rafRef.current = null
+    })
   }
 
   // --- Auth ---
@@ -664,174 +698,80 @@ function App() {
     TOUCH SYSTEM
   ================================= */
 
-  const handleTouchStart = useCallback((e) => {
+  const handleTouchStart = (e) => {
     const rect = e.currentTarget.getBoundingClientRect()
 
-    /* ----- Two fingers ----- */
+    if (e.touches.length === 1) {
+      gestureRef.current.mode = 'pan'
+      gestureRef.current.startPan = { ...panRef.current }
+      gestureRef.current.startCenter = {
+        x: e.touches[0].clientX - rect.left,
+        y: e.touches[0].clientY - rect.top
+      }
+    }
+
     if (e.touches.length === 2) {
-      e.preventDefault()
-
-      const center = getTouchCenter(e.touches, rect)
-
-      setIsZooming(true)
-      setIsPanning(false)
-
-      pinchStartDistance.current = getTouchDistance(e.touches)
-      pinchStartZoom.current = editorZoom
-
-      pinchStartPan.current = {
-        x: editorPanOffset.x,
-        y: editorPanOffset.y,
-        centerX: center.x,
-        centerY: center.y,
-      }
-
-      if (momentumFrame.current) {
-        cancelAnimationFrame(momentumFrame.current)
-        momentumFrame.current = null
-      }
+      gestureRef.current.mode = 'pinch'
+      gestureRef.current.startZoom = zoomRef.current
+      gestureRef.current.startPan = { ...panRef.current }
+      gestureRef.current.startDistance = getDistance(e.touches)
+      gestureRef.current.startCenter = getCenter(e.touches, rect)
     }
-
-    /* ----- One finger pan (when zoomed) ----- */
-    if (e.touches.length === 1 && editorZoom > 1) {
-      e.preventDefault()
-
-      setIsPanning(true)
-      setIsZooming(false)
-
-      const x = e.touches[0].clientX - rect.left
-      const y = e.touches[0].clientY - rect.top
-
-      pinchStartPan.current = {
-        x: x - editorPanOffset.x,
-        y: y - editorPanOffset.y,
-      }
-
-      lastPanPoint.current = {
-        x: editorPanOffset.x,
-        y: editorPanOffset.y,
-        time: performance.now(),
-      }
-    }
-  }, [editorZoom, editorPanOffset])
-
-  const handleTouchMove = useCallback((e) => {
-    const rect = e.currentTarget.getBoundingClientRect()
-
-    /* ===== TWO FINGER ===== */
-    if (e.touches.length === 2) {
-      e.preventDefault()
-
-      const distance = getTouchDistance(e.touches)
-      const center = getTouchCenter(e.touches, rect)
-
-      const distanceDelta = distance - pinchStartDistance.current
-      const shouldZoom = Math.abs(distanceDelta) > 2
-
-      /* ---- Zoom ---- */
-      if (shouldZoom) {
-        const scaleFactor = distance / pinchStartDistance.current
-        const newZoom = Math.max(
-          0.5,
-          Math.min(3, pinchStartZoom.current * scaleFactor),
-        )
-
-        const zoomRatio = newZoom / pinchStartZoom.current
-
-        const newPanX =
-          center.x -
-          (center.x - pinchStartPan.current.x) * zoomRatio
-
-        const newPanY =
-          center.y -
-          (center.y - pinchStartPan.current.y) * zoomRatio
-
-        setEditorZoom(newZoom)
-        setEditorPanOffset({
-          x: applyResistance(newPanX),
-          y: applyResistance(newPanY),
-        })
-
-        return
-      }
-
-      /* ---- Two finger pan ---- */
-      const dx = center.x - pinchStartPan.current.centerX
-      const dy = center.y - pinchStartPan.current.centerY
-
-      setEditorPanOffset({
-        x: applyResistance(pinchStartPan.current.x + dx),
-        y: applyResistance(pinchStartPan.current.y + dy),
-      })
-
-      return
-    }
-
-    /* ===== ONE FINGER PAN ===== */
-    if (e.touches.length === 1 && isPanning) {
-      e.preventDefault()
-
-      const x = e.touches[0].clientX - rect.left
-      const y = e.touches[0].clientY - rect.top
-
-      const newPanX = x - pinchStartPan.current.x
-      const newPanY = y - pinchStartPan.current.y
-
-      const now = performance.now()
-      const dt = now - lastPanPoint.current.time || 16
-
-      panVelocity.current = {
-        x: (newPanX - editorPanOffset.x) / dt,
-        y: (newPanY - editorPanOffset.y) / dt,
-      }
-
-      lastPanPoint.current = { x: newPanX, y: newPanY, time: now }
-
-      setEditorPanOffset({
-        x: applyResistance(newPanX),
-        y: applyResistance(newPanY),
-      })
-    }
-  }, [editorZoom, editorPanOffset, isPanning])
-
-  const applyMomentum = () => {
-    const friction = 0.94
-    const min = 0.01
-
-    panVelocity.current.x *= friction
-    panVelocity.current.y *= friction
-
-    if (
-      Math.abs(panVelocity.current.x) < min &&
-      Math.abs(panVelocity.current.y) < min
-    ) {
-      momentumFrame.current = null
-      return
-    }
-
-    setEditorPanOffset((prev) => ({
-      x: prev.x + panVelocity.current.x * 16,
-      y: prev.y + panVelocity.current.y * 16,
-    }))
-
-    momentumFrame.current = requestAnimationFrame(applyMomentum)
   }
 
-  const handleTouchEnd = useCallback((e) => {
-    if (e.touches.length === 0) {
-      if (isPanning) {
-        momentumFrame.current = requestAnimationFrame(applyMomentum)
-      }
+  const handleTouchMove = (e) => {
+    e.preventDefault()
 
-      setIsZooming(false)
-      setIsPanning(false)
+    const rect = e.currentTarget.getBoundingClientRect()
+
+    if (gestureRef.current.mode === 'pan' && e.touches.length === 1) {
+      const x = e.touches[0].clientX - rect.left
+      const y = e.touches[0].clientY - rect.top
+
+      panRef.current.x =
+        gestureRef.current.startPan.x +
+        (x - gestureRef.current.startCenter.x)
+
+      panRef.current.y =
+        gestureRef.current.startPan.y +
+        (y - gestureRef.current.startCenter.y)
+
+      requestFrame()
     }
-  }, [isPanning])
 
-  const resetZoom = () => {
-    setEditorZoom(1)
-    setEditorPanOffset({ x: 0, y: 0 })
-    panVelocity.current = { x: 0, y: 0 }
+    if (gestureRef.current.mode === 'pinch' && e.touches.length === 2) {
+      const distance = getDistance(e.touches)
+      const scaleFactor =
+        distance / gestureRef.current.startDistance
+
+      const newZoom =
+        gestureRef.current.startZoom * scaleFactor
+
+      zoomRef.current = Math.max(0.5, Math.min(3, newZoom))
+
+      const center = getCenter(e.touches, rect)
+
+      const ratio =
+        zoomRef.current / gestureRef.current.startZoom
+
+      panRef.current.x =
+        center.x -
+        (gestureRef.current.startCenter.x -
+          gestureRef.current.startPan.x) *
+          ratio
+
+      panRef.current.y =
+        center.y -
+        (gestureRef.current.startCenter.y -
+          gestureRef.current.startPan.y) *
+          ratio
+
+      requestFrame()
+    }
+  }
+
+  const handleTouchEnd = () => {
+    gestureRef.current.mode = null
   }
 
   // --- Render ---
@@ -842,16 +782,8 @@ function App() {
           <h1>Tedno</h1>
         </header>
         <div
-          className="editor-container"
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-          style={{
-            transform: `translate(${editorPanOffset.x}px, ${editorPanOffset.y}px) scale(${editorZoom})`,
-            transformOrigin: '0 0',
-            transition: isZooming || isPanning ? 'none' : 'transform 0.15s ease-out',
-          }}
-        >
+            className="editor-container"
+          >
           <p>Loading…</p>
         </div>
       </div>
@@ -860,108 +792,125 @@ function App() {
 
   if (!session) {
     return (
-      <div className="app">
-        <header className="app-header">
-          <h1>Tedno</h1>
-          {editorZoom !== 1 && (
-            <button className="btn btn-secondary" onClick={resetZoom}>
-              Reset Zoom ({Math.round(editorZoom * 100)}%)
-            </button>
-          )}
-        </header>
-        {authView === 'signup' ? (
-          <SignUp
-            onSignUp={handleSignUp}
-            onSwitchToSignIn={handleSwitchToSignIn}
-            loading={authLoading}
-            error={error}
-          />
-        ) : (
+      <div className="auth-wrapper">
+        {authView === 'signin' ? (
           <SignIn
             onSignIn={handleSignIn}
             onSwitchToSignUp={handleSwitchToSignUp}
-            loading={authLoading}
             error={error}
+            loading={authLoading}
+          />
+        ) : (
+          <SignUp
+            onSignUp={handleSignUp}
+            onSwitchToSignIn={handleSwitchToSignIn}
+            error={error}
+            loading={authLoading}
           />
         )}
       </div>
     )
   }
 
-  return (
-    <div className="app">
-      <header className="app-header">
-        <h1>Tedno</h1>
-        <div className="header-controls">
-          <DocumentManager
-            documents={documentsForManager}
-            selectedDocument={selectedDocumentId}
-            onCreateDocument={handleCreateDocument}
-            onLoadDocument={handleLoadDocument}
-            onDeleteDocument={handleDeleteDocument}
-          />
-          <button className="btn btn-primary" onClick={handleCreateNote} disabled={!selectedDocumentId}>
-            + New Note
-          </button>
-          <div className="user-menu">
-            <span className="user-email">{session?.user?.email || 'Guest'}</span>
-            <button className="btn btn-secondary" onClick={handleSignOut} disabled={authLoading}>
-              {authLoading ? 'Signing out...' : 'Sign Out'}
-            </button>
-          </div>
-        </div>
-      </header>
+return (
+  <div className={`app ${isDrawingMode ? 'drawing-mode' : ''}`}>
+    <header className="app-header">
+      <h1>Tedno</h1>
+      <div className="header-controls">
+        <DocumentManager
+          documents={documentsForManager}
+          selectedDocument={selectedDocumentId}
+          onCreateDocument={handleCreateDocument}
+          onLoadDocument={handleLoadDocument}
+          onDeleteDocument={handleDeleteDocument}
+        />
 
+        <button
+          className="btn btn-primary"
+          onClick={handleCreateNote}
+          disabled={!selectedDocumentId}
+        >
+          + New Note
+        </button>
+
+        <div className="user-menu">
+          <span className="user-email">
+            {session?.user?.email || 'Guest'}
+          </span>
+
+          <button
+            className="btn btn-secondary"
+            onClick={handleSignOut}
+            disabled={authLoading}
+          >
+            {authLoading ? 'Signing out...' : 'Sign Out'}
+          </button>
+        </div>
+      </div>
+    </header>
+
+    {/* Fixed Rich Text Toolbar */}
+    <div className="rich-text-toolbar-container">
+      <RichTextToolbar editor={editor} onToggleDrawing={() => setIsDrawingMode(!isDrawingMode)} isDrawingMode={isDrawingMode} />
+    </div>
+
+    {/* Fixed Drawing Toolbar */}
+    {isDrawingMode && (
+      <div className="drawing-toolbar-container">
+        <DrawingToolbar />
+      </div>
+    )}
+
+    {/* GESTURE LAYER */}
+    <div
+      className="gesture-layer"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* TRANSFORM LAYER (ONLY this moves) */}
       <div
-        className="editor-container"
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        style={{
-          transform: `translate(${editorPanOffset.x}px, ${editorPanOffset.y}px) scale(${editorZoom})`,
-          transformOrigin: '0 0',
-          transition: isZooming || isPanning ? 'none' : 'transform 0.15s ease-out',
-          touchAction: 'none'
-        }}
+        ref={transformRef}
+        className="transform-layer"
       >
         {error && (
-          <div style={{ 
-            padding: '2rem', 
-            textAlign: 'center', 
-            backgroundColor: '#fef2f2', 
-            border: '1px solid #fecaca', 
-            borderRadius: '8px', 
-            margin: '1rem', 
-            color: '#dc2626' 
-          }}>
+          <div className="error-box">
             <h3>Database Error</h3>
             <p>{error}</p>
-            <p style={{ fontSize: '0.875rem', marginTop: '0.5rem', color: '#6b6b6b' }}>
+            <p className="error-hint">
               Make sure you've created the required database tables in Supabase.
             </p>
-            <button 
-              className="btn btn-primary" 
-              style={{ marginTop: '1rem' }}
+            <button
+              className="btn btn-primary"
               onClick={() => setError(null)}
             >
               Retry
             </button>
           </div>
         )}
-        
+
         {!error && (
           <>
-            <div className="editor-wrapper" ref={editorWrapperRef}>
+            <div
+              className="editor-container"
+              ref={editorWrapperRef}
+            >
               {loadingInitial ? (
-                <div style={{ padding: '2rem', textAlign: 'center' }}>
+                <div className="centered">
                   <p>Loading document…</p>
                 </div>
               ) : !selectedDocumentId ? (
-                <div style={{ padding: '2rem', textAlign: 'center' }}>
-                  <p>No documents found. Click "+ New Document" to create one.</p>
+                <div className="centered">
+                  <p>
+                    No documents found. Click "+ New Document" to create one.
+                  </p>
                 </div>
               ) : (
-                <RichTextEditor content={documentContent} onChange={setDocumentContent} />
+                <RichTextEditor
+                  content={documentContent}
+                  onChange={setDocumentContent}
+                  showToolbar={false}
+                />
               )}
             </div>
 
@@ -970,6 +919,7 @@ function App() {
                 editorWrapperRef={editorWrapperRef}
                 strokes={canvasStrokes}
                 onChangeStrokes={handleCanvasStrokesChange}
+                isDrawingMode={isDrawingMode}
               />
             )}
 
@@ -988,7 +938,9 @@ function App() {
         )}
       </div>
     </div>
-  )
+  </div>
+)
 }
+
 
 export default App

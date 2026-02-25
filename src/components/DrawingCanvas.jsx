@@ -53,7 +53,7 @@ function isPointInStroke(point, d) {
   return isPointInPolygon(point, pathToPolygon(d))
 }
 
-const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
+const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes, isDrawingMode }) => {
   const svgRef = useRef(null)
   const livePathRef = useRef(null)
   const pointsRef = useRef([])
@@ -67,7 +67,6 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
   const [history, setHistory] = useState([])
   const [redoHistory, setRedoHistory] = useState([])
 
-  const [isDrawingMode, setIsDrawingMode] = useState(false)
   const [activeTool, setActiveTool] = useState('pen')
   const [penColor, setPenColor] = useState(COLORS[0])
   const [penWidth, setPenWidth] = useState(DEFAULT_WIDTH)
@@ -491,7 +490,6 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
   }, [isDrawingMode, activeTool, penWidth, penColor, editorWrapperRef, zoom, panOffset])
 
   const handleToggleDrawing = () => {
-    setIsDrawingMode((prev) => !prev)
     isDrawingRef.current = false
     isErasingRef.current = false
     clearLiveStroke()
@@ -560,97 +558,92 @@ const DrawingCanvas = ({ editorWrapperRef, strokes, onChangeStrokes }) => {
         </g>
         <path ref={livePathRef} className="drawing-live-stroke" />
       </svg>
+    </div>
+  )
+}
 
-      <div className={`drawing-toolbar ${isDrawingMode ? 'drawing-toolbar--expanded' : 'drawing-toolbar--collapsed'}`}>
-        {/* Toggle */}
-        <button
-          className={`drawing-toolbar-btn drawing-toolbar-toggle ${isDrawingMode ? 'is-active' : ''}`}
-          onClick={handleToggleDrawing}
-          type="button"
-          title="Toggle drawing mode"
-        >
-          ✏
-        </button>
+// Export the drawing toolbar component separately
+export const DrawingToolbar = () => {
+  const [activeTool, setActiveTool] = useState('pen')
+  const [penColor, setPenColor] = useState(COLORS[0])
+  const [penWidth, setPenWidth] = useState(DEFAULT_WIDTH)
 
-        <div className="drawing-toolbar-main">
-          {/* Pen */}
+  // Scale preview dot: maps penWidth 2–24 → dot 4–16px
+  const previewDotSize = Math.round(4 + ((penWidth - MIN_WIDTH) / (MAX_WIDTH - MIN_WIDTH)) * 12)
+
+  return (
+    <div className="drawing-toolbar-fixed">
+      {/* Pen */}
+      <button
+        type="button"
+        className={`drawing-toolbar-btn ${activeTool === 'pen' ? 'is-active' : ''}`}
+        onClick={() => setActiveTool('pen')}
+        title="Pen"
+      >
+        ✏
+      </button>
+
+      {/* Eraser */}
+      <button
+        type="button"
+        className={`drawing-toolbar-btn ${activeTool === 'eraser' ? 'is-active' : ''}`}
+        onClick={() => setActiveTool('eraser')}
+        title="Eraser"
+      >
+        ◻
+      </button>
+
+      <div className="drawing-toolbar-divider" />
+
+      {/* Color swatches */}
+      <div className="drawing-color-swatches">
+        {COLORS.map((color) => (
           <button
+            key={color}
             type="button"
-            className={`drawing-toolbar-btn ${activeTool === 'pen' ? 'is-active' : ''}`}
-            onClick={() => setActiveTool('pen')}
-            title="Pen"
-          >
-            ✏
-          </button>
-
-          {/* Eraser */}
-          <button
-            type="button"
-            className={`drawing-toolbar-btn ${activeTool === 'eraser' ? 'is-active' : ''}`}
-            onClick={() => setActiveTool('eraser')}
-            title="Eraser"
-          >
-            ◻
-          </button>
-
-          <div className="drawing-toolbar-divider" />
-
-          {/* Color swatches */}
-          <div className="drawing-color-swatches">
-            {COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                className={`drawing-color-swatch ${penColor === color ? 'is-active' : ''}`}
-                style={{ backgroundColor: color, color }}
-                onClick={() => { setPenColor(color); setActiveTool('pen') }}
-                title={color}
-              />
-            ))}
-          </div>
-
-          <div className="drawing-toolbar-divider" />
-
-          {/* Width slider */}
-          <div className="drawing-width-slider-wrap">
-            <div className="drawing-width-preview">
-              <span
-                className="drawing-width-dot"
-                style={{ width: previewDotSize, height: previewDotSize }}
-              />
-            </div>
-            <input
-              type="range"
-              className="drawing-width-slider"
-              min={MIN_WIDTH}
-              max={MAX_WIDTH}
-              step={1}
-              value={penWidth}
-              onChange={(e) => { setPenWidth(Number(e.target.value)); setActiveTool('pen') }}
-              title={`Stroke width: ${penWidth}px`}
-            />
-          </div>
-
-          <div className="drawing-toolbar-divider" />
-
-          {/* Undo / Redo */}
-          <button type="button" className="drawing-toolbar-btn" onClick={handleUndo} disabled={!history.length} title="Undo (Cmd+Z)">↶</button>
-          <button type="button" className="drawing-toolbar-btn" onClick={handleRedo} disabled={!redoHistory.length} title="Redo (Cmd+Shift+Z)">↷</button>
-
-          <div className="drawing-toolbar-divider" />
-
-          {/* Clear */}
-          <button type="button" className="drawing-toolbar-btn" onClick={handleClearAll} title="Clear (double-tap to confirm)">⌫</button>
-
-          {/* Reset Zoom */}
-          {zoom !== 1 && (
-            <button type="button" className="drawing-toolbar-btn" onClick={handleResetZoom} title="Reset Zoom">⊙</button>
-          )}
-
-          {/* Export */}
-          <button type="button" className="drawing-toolbar-btn" onClick={handleExport} title="Export PNG">↓</button>
-        </div>
+            className={`drawing-color-swatch ${penColor === color ? 'is-active' : ''}`}
+            style={{ backgroundColor: color, color }}
+            onClick={() => { setPenColor(color); setActiveTool('pen') }}
+            title={color}
+          />
+        ))}
       </div>
+
+      <div className="drawing-toolbar-divider" />
+
+      {/* Width slider */}
+      <div className="drawing-width-slider-wrap">
+        <div className="drawing-width-preview">
+          <span
+            className="drawing-width-dot"
+            style={{ width: previewDotSize, height: previewDotSize }}
+          />
+        </div>
+        <input
+          type="range"
+          className="drawing-width-slider"
+          min={MIN_WIDTH}
+          max={MAX_WIDTH}
+          step={1}
+          value={penWidth}
+          onChange={(e) => { setPenWidth(Number(e.target.value)); setActiveTool('pen') }}
+          title={`Stroke width: ${penWidth}px`}
+        />
+      </div>
+
+      <div className="drawing-toolbar-divider" />
+
+      {/* Undo / Redo */}
+      <button type="button" className="drawing-toolbar-btn" title="Undo (Cmd+Z)">↶</button>
+      <button type="button" className="drawing-toolbar-btn" title="Redo (Cmd+Shift+Z)">↷</button>
+
+      <div className="drawing-toolbar-divider" />
+
+      {/* Clear */}
+      <button type="button" className="drawing-toolbar-btn" title="Clear (double-tap to confirm)">⌫</button>
+
+      {/* Export */}
+      <button type="button" className="drawing-toolbar-btn" title="Export PNG">↓</button>
     </div>
   )
 }
