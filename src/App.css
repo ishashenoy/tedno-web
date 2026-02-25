@@ -90,6 +90,7 @@
   flex-direction: column;
   touch-action: none; /* Enable custom touch handling */
   user-select: none; /* Prevent text selection during touch */
+  overscroll-behavior: none;
 }
 
 .editor-wrapper {
